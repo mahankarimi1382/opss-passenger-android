@@ -1,0 +1,58 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build debug APK and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Set up Gradle caching
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+
+      - name: Build prod debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleProdDebug --no-daemon --stacktrace
+
+      - name: Collect APK and version
+        id: meta
+        run: |
+          mkdir -p dist
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          test -n "$APK" || { echo "No APK produced"; exit 1; }
+          cp "$APK" "dist/opss-passenger-prod-debug.apk"
+          VERSION=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -1 | tr -d ' ')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          NOTES="Automated build of main@${GITHUB_SHA::7} — $(date -u '+%Y-%m-%d %H:%M UTC')"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.apk --clobber
+            gh release edit "$TAG" --title "opss passenger ${TAG}" --notes "$NOTES"
+          else
+            gh release create "$TAG" dist/*.apk --title "opss passenger ${TAG}" --notes "$NOTES"
+          fi
